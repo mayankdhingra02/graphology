@@ -5,7 +5,6 @@
  * Depth-First Search traversal function.
  */
 var isGraph = require('graphology-utils/is-graph');
-var DFSStack = require('graphology-indices/dfs-stack');
 var utils = require('./utils');
 
 var TraversalRecord = utils.TraversalRecord;
@@ -36,7 +35,9 @@ function abstractDfs(graph, startingNode, callback, options) {
   // Early termination
   if (graph.order === 0) return;
 
-  var stack = new DFSStack(graph);
+  // Pending paths can share a node until that node is actually visited.
+  var stack = [];
+  var seen = new Set();
 
   var forEachNeighbor =
     graph['forEach' + capitalize(options.mode || 'outbound') + 'Neighbor'].bind(
@@ -46,7 +47,7 @@ function abstractDfs(graph, startingNode, callback, options) {
   var forEachNode;
 
   if (startingNode === null) {
-    forEachNode = stack.forEachNodeYetUnseen.bind(stack);
+    forEachNode = graph.forEachNode.bind(graph);
   } else {
     forEachNode = function (fn) {
       startingNode = '' + startingNode;
@@ -57,18 +58,21 @@ function abstractDfs(graph, startingNode, callback, options) {
   var record, stop;
 
   function visit(neighbor, attr) {
-    stack.pushWith(
-      neighbor,
-      new TraversalRecord(neighbor, attr, record.depth + 1)
-    );
+    if (!seen.has(neighbor))
+      stack.push(new TraversalRecord(neighbor, attr, record.depth + 1));
   }
 
   forEachNode(function (node, attr) {
-    stack.pushWith(node, new TraversalRecord(node, attr, 0));
+    if (seen.has(node)) return;
 
-    while (stack.size !== 0) {
+    stack.push(new TraversalRecord(node, attr, 0));
+
+    while (stack.length !== 0) {
       record = stack.pop();
 
+      if (seen.has(record.node)) continue;
+
+      seen.add(record.node);
       stop = callback(record.node, record.attributes, record.depth);
 
       if (stop === true) continue;

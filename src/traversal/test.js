@@ -8,6 +8,7 @@ var mergeCycle = require('graphology-utils/merge-cycle');
 var mergeStar = require('graphology-utils/merge-star');
 var erdosRenyi = require('graphology-generators/random/erdos-renyi');
 var pathGraph = require('graphology-generators/classic/path');
+var seedrandom = require('seedrandom');
 
 var lib = require('./index');
 var bfs = lib.bfs;
@@ -15,6 +16,38 @@ var dfs = lib.dfs;
 
 var dfsFromNode = lib.dfsFromNode;
 var bfsFromNode = lib.bfsFromNode;
+var pseudoDfs = lib.pseudoDfs;
+var pseudoDfsFromNode = lib.pseudoDfsFromNode;
+
+function recursiveDfs(graph, startingNode, mode, prune) {
+  var seen = new Set();
+  var traversal = [];
+
+  function visit(node, depth) {
+    if (seen.has(node)) return;
+
+    seen.add(node);
+    traversal.push([node, depth]);
+
+    if (prune(node, depth) === true) return;
+
+    var neighbors = graph[mode + 'Neighbors'](node);
+
+    // Match the existing stack's last-neighbor-first tie order.
+    for (var i = neighbors.length - 1; i >= 0; i--)
+      visit(neighbors[i], depth + 1);
+  }
+
+  if (startingNode === null) {
+    graph.forEachNode(function (node) {
+      visit(node, 0);
+    });
+  } else {
+    visit(startingNode, 0);
+  }
+
+  return traversal;
+}
 
 describe('graphology-traversal', function () {
   describe('dfs', function () {
@@ -190,7 +223,7 @@ describe('graphology-traversal', function () {
       assert.deepStrictEqual(path, ['2', '1', '0']);
     });
 
-    it.skip('should have a valid depth wrt DFS constraints (issue #481).', function () {
+    it('should have a valid depth wrt DFS constraints (issue #481).', function () {
       var graph = new Graph.DirectedGraph();
       graph.addNode('1');
       graph.addNode('2');
@@ -207,9 +240,158 @@ describe('graphology-traversal', function () {
 
       assert.deepStrictEqual(traversal, [
         ['1', 0],
-        ['2', 1],
-        ['3', 2]
+        ['3', 1],
+        ['2', 2]
       ]);
+    });
+
+    it('should descend before backtracking in an undirected triangle.', function () {
+      var graph = new Graph.UndirectedGraph();
+      graph.mergeEdge('a', 'b');
+      graph.mergeEdge('b', 'c');
+      graph.mergeEdge('c', 'a');
+
+      var path = [];
+      dfsFromNode(graph, 'a', function (node, attr, depth) {
+        path.push([node, depth]);
+      });
+
+      assert.deepStrictEqual(path, [
+        ['a', 0],
+        ['c', 1],
+        ['b', 2]
+      ]);
+    });
+
+    it('should handle a dense graph with many pending paths to the same node.', function () {
+      var graph = new Graph.DirectedGraph();
+
+      for (var i = 0; i < 80; i++) graph.addNode('n' + i);
+      graph.forEachNode(function (source) {
+        graph.forEachNode(function (target) {
+          graph.addEdge(source, target);
+        });
+      });
+
+      var depths = [];
+      var seen = new Set();
+      dfsFromNode(graph, 'n0', function (node, attr, depth) {
+        assert(!seen.has(node));
+        seen.add(node);
+        depths.push(depth);
+      });
+
+      assert.strictEqual(seen.size, 80);
+      assert.deepStrictEqual(
+        depths,
+        Array.from({length: 80}, function (_, depth) {
+          return depth;
+        })
+      );
+    });
+
+    ['in', 'out', 'directed', 'undirected', 'inbound', 'outbound'].forEach(
+      function (mode) {
+        it(
+          'should match recursive DFS and pruning in ' + mode + ' mode.',
+          function () {
+            var prunes = [
+              function () {},
+              function (node, depth) {
+                return depth >= 2;
+              },
+              function (node) {
+                return node === 'n3';
+              }
+            ];
+
+            [0, 1, 2, 3, 4, 5, 6, 7].forEach(function (seed) {
+              var rng = seedrandom('dfs-' + seed);
+              var graph = new Graph.MultiGraph();
+
+              var i;
+              for (i = 0; i < 9; i++) graph.addNode('n' + i, {index: i});
+              for (i = 0; i < 9; i++) {
+                for (var j = 0; j < 9; j++) {
+                  if (rng() < 0.25) graph.addDirectedEdge('n' + i, 'n' + j);
+                  if (i <= j && rng() < 0.15)
+                    graph.addUndirectedEdge('n' + i, 'n' + j);
+                }
+              }
+
+              [null, 'n2'].forEach(function (start) {
+                prunes.forEach(function (prune) {
+                  var actual = [];
+                  function callback(node, attr, depth) {
+                    assert.strictEqual(attr, graph.getNodeAttributes(node));
+                    actual.push([node, depth]);
+                    return prune(node, depth);
+                  }
+
+                  if (start === null) dfs(graph, callback, {mode: mode});
+                  else dfsFromNode(graph, start, callback, {mode: mode});
+
+                  assert.deepStrictEqual(
+                    actual,
+                    recursiveDfs(graph, start, mode, prune)
+                  );
+                });
+              });
+            });
+          }
+        );
+      }
+    );
+  });
+
+  describe('pseudoDfs', function () {
+    it('should preserve the space-efficient traversal without exposing depth.', function () {
+      var graph = new Graph.UndirectedGraph();
+      graph.mergeEdge('a', 'b');
+      graph.mergeEdge('b', 'c');
+      graph.mergeEdge('c', 'a');
+      graph.addNode('isolated', {value: 1});
+
+      var path = [];
+      pseudoDfs(graph, function (node, attr) {
+        assert.strictEqual(arguments.length, 2);
+        assert.strictEqual(attr, graph.getNodeAttributes(node));
+        path.push(node);
+      });
+
+      assert.deepStrictEqual(path, ['a', 'c', 'b', 'isolated']);
+    });
+
+    it('should support starting nodes, modes and branch pruning.', function () {
+      var graph = pathGraph(Graph.DirectedGraph, 5);
+      var path = [];
+
+      pseudoDfsFromNode(
+        graph,
+        4,
+        function (node) {
+          path.push(node);
+          return node === '2';
+        },
+        {mode: 'inbound'}
+      );
+
+      assert.deepStrictEqual(path, ['4', '3', '2']);
+    });
+
+    it('should preserve validation and empty graph behavior.', function () {
+      assert.throws(function () {
+        pseudoDfs(null);
+      }, /graph/);
+      assert.throws(function () {
+        pseudoDfs(new Graph(), null);
+      }, /function/);
+      pseudoDfs(new Graph(), function () {
+        assert.fail('Unexpected callback');
+      });
+      assert.throws(function () {
+        pseudoDfsFromNode(pathGraph(Graph, 2), 'missing', function () {});
+      }, /could not find/);
     });
   });
 

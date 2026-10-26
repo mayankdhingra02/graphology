@@ -8,6 +8,7 @@
     "bfs.js",
     "index.js",
     "dfs.js",
+    "pseudo-dfs.js",
     "utils.js"
   ],
   "types": "./index.d.ts",
